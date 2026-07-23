@@ -10,6 +10,14 @@ public class UpgradeResponse {
     @JsonProperty("cooldown_ms")
     private long cooldownMs;
 
+    @JsonProperty("current_level")
+    private Integer currentLevel;
+
+    @JsonProperty("target_level")
+    private Integer targetLevel;
+
+    private Integer cost;
+
     private String error;
     private String message;
 
@@ -27,6 +35,30 @@ public class UpgradeResponse {
 
     public void setCooldownMs(long cooldownMs) {
         this.cooldownMs = cooldownMs;
+    }
+
+    public Integer getCurrentLevel() {
+        return currentLevel;
+    }
+
+    public void setCurrentLevel(Integer currentLevel) {
+        this.currentLevel = currentLevel;
+    }
+
+    public Integer getTargetLevel() {
+        return targetLevel;
+    }
+
+    public void setTargetLevel(Integer targetLevel) {
+        this.targetLevel = targetLevel;
+    }
+
+    public Integer getCost() {
+        return cost;
+    }
+
+    public void setCost(Integer cost) {
+        this.cost = cost;
     }
 
     public String getError() {

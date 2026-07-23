@@ -11,6 +11,7 @@ import com.example.botdiplomacia.repository.UpgradeTaskRepository;
 import com.example.botdiplomacia.service.TelegramNotifier;
 import java.time.Duration;
 import java.time.OffsetDateTime;
+import java.time.format.DateTimeFormatter;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
@@ -31,6 +32,8 @@ import org.springframework.stereotype.Component;
 @Component
 public class UpgradeScheduler {
     private static final Logger log = LoggerFactory.getLogger(UpgradeScheduler.class);
+    private static final long SAFETY_MARGIN_MS = 2000;
+    private static final DateTimeFormatter TIME_FORMAT = DateTimeFormatter.ofPattern("HH:mm:ss");
 
     private final UpgradeTaskRepository upgradeTaskRepository;
     private final GameAccountRepository gameAccountRepository;
@@ -87,7 +90,8 @@ public class UpgradeScheduler {
         UpgradeResult result = diplomaciaApiClient.upgradeSkill(account.getSessionToken(), task.getSkillCode(), task.getCostType());
 
         if (result.isSuccess()) {
-            long waitMs = Math.max(result.getCooldownMs(), 1000);
+            // Margen explicito sobre el cooldown que devuelve la API, para no pegarle justo al limite.
+            long waitMs = Math.max(result.getCooldownMs(), 0) + SAFETY_MARGIN_MS;
             OffsetDateTime nextAvailable = OffsetDateTime.now().plus(Duration.ofMillis(waitMs));
             task.setNextRunAt(nextAvailable);
             task.setLastError(null);
@@ -96,6 +100,8 @@ public class UpgradeScheduler {
             account.setBusyUntil(nextAvailable);
             account.setBusySkillCode(task.getSkillCode());
             gameAccountRepository.save(account);
+
+            notifier.sendMessage(account.getTelegramUserId(), buildSuccessMessage(task, result, nextAvailable));
         } else if (result.isAuthExpired()) {
             account.setActive(false);
             account.setBusyUntil(null);
@@ -122,5 +128,18 @@ public class UpgradeScheduler {
                             + ". La tarea quedo pausada, usa /autosubir " + SkillCatalog.skillDisplayName(task.getSkillCode())
                             + " " + SkillCatalog.resourceDisplayName(task.getCostType()) + " para reintentar.");
         }
+    }
+
+    private String buildSuccessMessage(UpgradeTask task, UpgradeResult result, OffsetDateTime nextAvailable) {
+        StringBuilder sb = new StringBuilder();
+        sb.append(SkillCatalog.skillDisplayName(task.getSkillCode())).append(": subida en marcha");
+        if (result.getCurrentLevel() != null && result.getTargetLevel() != null) {
+            sb.append(" (nivel ").append(result.getCurrentLevel()).append(" -> ").append(result.getTargetLevel()).append(")");
+        }
+        if (result.getCost() != null) {
+            sb.append(", costo ").append(result.getCost()).append(" ").append(SkillCatalog.resourceDisplayName(task.getCostType()));
+        }
+        sb.append(". Estara lista aprox a las ").append(nextAvailable.format(TIME_FORMAT)).append(".");
+        return sb.toString();
     }
 }

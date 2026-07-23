@@ -45,7 +45,7 @@ public class DiplomaciaApiClient {
                 String reason = response.getError() != null ? response.getError() : response.getMessage();
                 return UpgradeResult.failure(reason != null ? reason : "La API respondio success=false");
             }
-            return UpgradeResult.success(response.getCooldownMs());
+            return UpgradeResult.success(response.getCooldownMs(), response.getCurrentLevel(), response.getTargetLevel(), response.getCost());
         } catch (HttpClientErrorException e) {
             if (e.getStatusCode() == HttpStatus.UNAUTHORIZED || e.getStatusCode() == HttpStatus.FORBIDDEN) {
                 return UpgradeResult.authExpired();
