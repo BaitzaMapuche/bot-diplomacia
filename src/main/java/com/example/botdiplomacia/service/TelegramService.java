@@ -137,9 +137,9 @@ public class TelegramService {
             case "/start" -> "Bienvenido a tu bot de diplomacia. Usa /help para ver los comandos disponibles.";
             case "/help" -> helpText();
             case "/autorizar" -> handleAuthorize(chatId, parts);
-            case "/token" -> handleToken(chatId, messageId, text, parts[0]);
+            case "/token" -> handleToken(chatId, messageId, parts);
             case "/autosubir" -> handleAutoUpgrade(chatId, parts);
-            case "/parar" -> handleStop(chatId);
+            case "/parar" -> handleStop(chatId, parts);
             case "/estado" -> handleStatus(chatId);
             case "/notificaciones" -> handleNotifications(chatId, parts);
             default -> "Comando no reconocido. Usa /help para ver los comandos disponibles.";
@@ -148,24 +148,26 @@ public class TelegramService {
 
     private String helpText() {
         StringBuilder sb = new StringBuilder("Comandos disponibles:\n");
-        sb.append("/token <token> - guarda o actualiza tu sesion de diplomacia.com.tr\n");
+        sb.append("Puedes vincular varias cuentas del juego. Cada una necesita un nombre corto sin espacios (ej. principal, alt1).\n\n");
+        sb.append("/token <token> <cuenta> - vincula o actualiza el token de esa cuenta\n");
         sb.append(TOKEN_HELP).append("\n");
-        sb.append("/autosubir <habilidad> <recurso> - activa la subida automatica de una estadistica\n");
+        sb.append("/autosubir <habilidad> <recurso> <cuenta> - activa la subida automatica en esa cuenta\n");
         sb.append("   Habilidades: ").append(SkillCatalog.availableSkillsText()).append("\n");
         sb.append("   Recursos: ").append(SkillCatalog.availableResourcesText()).append("\n");
-        sb.append("/parar - detiene todas tus subidas automaticas\n");
-        sb.append("/estado - muestra tus tareas y cuando corren de nuevo\n");
-        sb.append("/notificaciones <on|off> - activa o desactiva el aviso cada vez que arranca una subida (viene en on por defecto)\n");
+        sb.append("/parar <cuenta|todas> - detiene la subida automatica de esa cuenta (o de todas)\n");
+        sb.append("/estado - muestra el estado de todas tus cuentas\n");
+        sb.append("/notificaciones <on|off> <cuenta> - activa o desactiva el aviso cada vez que arranca una subida en esa cuenta (viene en on por defecto)\n");
         return sb.toString();
     }
 
     private String handleNotifications(Long chatId, String[] parts) {
-        Optional<GameAccount> accountOpt = gameAccountRepository.findByTelegramUserId(chatId);
-        if (accountOpt.isEmpty()) {
-            return "Primero manda /token <tu_token> para vincular tu cuenta del juego.";
+        if (parts.length < 3 || !(parts[1].equalsIgnoreCase("on") || parts[1].equalsIgnoreCase("off"))) {
+            return "Uso: /notificaciones <on|off> <cuenta>";
         }
-        if (parts.length < 2 || !(parts[1].equalsIgnoreCase("on") || parts[1].equalsIgnoreCase("off"))) {
-            return "Uso: /notificaciones <on|off>";
+        String accountName = parts[2];
+        Optional<GameAccount> accountOpt = gameAccountRepository.findByTelegramUserIdAndNameIgnoreCase(chatId, accountName);
+        if (accountOpt.isEmpty()) {
+            return "No tienes una cuenta llamada '" + accountName + "'.";
         }
 
         GameAccount account = accountOpt.get();
@@ -174,8 +176,8 @@ public class TelegramService {
         gameAccountRepository.save(account);
 
         return enable
-                ? "Listo, te voy a avisar cada vez que arranque una subida."
-                : "Listo, ya no te aviso cuando arranca una subida (los errores y el token vencido si te los sigo avisando).";
+                ? "Listo, te voy a avisar cada vez que arranque una subida en '" + accountName + "'."
+                : "Listo, ya no te aviso cuando arranca una subida en '" + accountName + "' (los errores y el token vencido si te los sigo avisando).";
     }
 
     private String handleAuthorize(Long chatId, String[] parts) {
@@ -197,14 +199,22 @@ public class TelegramService {
         }
     }
 
-    private String handleToken(Long chatId, Integer messageId, String text, String commandWord) {
-        String token = text.substring(commandWord.length()).strip();
-        if (token.isEmpty()) {
-            return "Uso: /token <tu_token>\n" + TOKEN_HELP;
+    private String handleToken(Long chatId, Integer messageId, String[] parts) {
+        if (parts.length < 3) {
+            if (messageId != null && parts.length == 2) {
+                // Ya mando un token pero sin nombre de cuenta: borramos igual para no dejarlo expuesto.
+                notifier.deleteMessage(chatId, messageId);
+            }
+            return "Uso: /token <token> <cuenta>\n" + TOKEN_HELP;
         }
+        String token = parts[1];
+        String accountName = parts[2];
 
-        GameAccount account = gameAccountRepository.findByTelegramUserId(chatId).orElseGet(GameAccount::new);
+        GameAccount account = gameAccountRepository.findByTelegramUserIdAndNameIgnoreCase(chatId, accountName)
+                .orElseGet(GameAccount::new);
+        boolean isNew = account.getId() == null;
         account.setTelegramUserId(chatId);
+        account.setName(accountName);
         account.setSessionToken(token);
         account.setTokenUpdatedAt(OffsetDateTime.now());
         account.setActive(true);
@@ -223,12 +233,13 @@ public class TelegramService {
         if (messageId != null) {
             notifier.deleteMessage(chatId, messageId);
         }
-        return "Token guardado. Borre tu mensaje por seguridad. Tareas en error se reactivaron.";
+        return (isNew ? "Cuenta '" + accountName + "' vinculada. " : "Token de '" + accountName + "' actualizado. ")
+                + "Borre tu mensaje por seguridad. Tareas en error de esa cuenta se reactivaron.";
     }
 
     private String handleAutoUpgrade(Long chatId, String[] parts) {
-        if (parts.length < 3) {
-            return "Uso: /autosubir <habilidad> <recurso>\nHabilidades: " + SkillCatalog.availableSkillsText()
+        if (parts.length < 4) {
+            return "Uso: /autosubir <habilidad> <recurso> <cuenta>\nHabilidades: " + SkillCatalog.availableSkillsText()
                     + "\nRecursos: " + SkillCatalog.availableResourcesText();
         }
         String skillCode = SkillCatalog.resolveSkillCode(parts[1]);
@@ -239,14 +250,15 @@ public class TelegramService {
         if (costType == null) {
             return "No reconozco el recurso '" + parts[2] + "'. Opciones: " + SkillCatalog.availableResourcesText();
         }
+        String accountName = parts[3];
 
-        Optional<GameAccount> accountOpt = gameAccountRepository.findByTelegramUserId(chatId);
+        Optional<GameAccount> accountOpt = gameAccountRepository.findByTelegramUserIdAndNameIgnoreCase(chatId, accountName);
         if (accountOpt.isEmpty()) {
-            return "Primero manda /token <tu_token> para vincular tu cuenta del juego.";
+            return "No tienes una cuenta llamada '" + accountName + "'. Primero manda /token <token> " + accountName + " para vincularla.";
         }
         GameAccount account = accountOpt.get();
         if (!account.isActive()) {
-            return "Tu token esta marcado como invalido. Manda /token <nuevo_token> primero.";
+            return "El token de '" + accountName + "' esta marcado como invalido. Manda /token <nuevo_token> " + accountName + " primero.";
         }
 
         UpgradeTask task = upgradeTaskRepository.findByGameAccountIdAndSkillCode(account.getId(), skillCode)
@@ -264,68 +276,93 @@ public class TelegramService {
         upgradeTaskRepository.save(task);
 
         String reply = "Subida automatica activada para " + SkillCatalog.skillDisplayName(skillCode) + " pagando con "
-                + SkillCatalog.resourceDisplayName(costType) + ".";
+                + SkillCatalog.resourceDisplayName(costType) + " en la cuenta '" + accountName + "'.";
         if (account.isBusy(OffsetDateTime.now())) {
-            reply += "\nOjo: ahora mismo el juego ya tiene otra subida en curso (" + SkillCatalog.skillDisplayName(account.getBusySkillCode())
+            reply += "\nOjo: ahora mismo esa cuenta ya tiene otra subida en curso (" + SkillCatalog.skillDisplayName(account.getBusySkillCode())
                     + "), asi que esta empezara automaticamente cuando esa termine, aprox a las "
                     + account.getBusyUntil().format(TIME_FORMAT) + ".";
         }
         return reply;
     }
 
-    private String handleStop(Long chatId) {
-        Optional<GameAccount> accountOpt = gameAccountRepository.findByTelegramUserId(chatId);
-        if (accountOpt.isEmpty()) {
-            return "No hay nada para detener.";
+    private String handleStop(Long chatId, String[] parts) {
+        if (parts.length < 2) {
+            return "Uso: /parar <cuenta>  o  /parar todas";
         }
-        GameAccount account = accountOpt.get();
-        List<UpgradeTask> tasks = upgradeTaskRepository.findByGameAccountId(account.getId());
-        List<UpgradeTask> activeTasks = tasks.stream().filter(t -> t.getStatus() == UpgradeTaskStatus.ACTIVE).toList();
-
-        if (activeTasks.isEmpty()) {
+        List<GameAccount> accounts = gameAccountRepository.findByTelegramUserId(chatId);
+        if (accounts.isEmpty()) {
             return "No hay nada para detener.";
         }
 
-        activeTasks.forEach(t -> t.setStatus(UpgradeTaskStatus.PAUSED));
-        upgradeTaskRepository.saveAll(activeTasks);
-
-        String reply = "Se detuvo la subida automatica.";
-        if (account.isBusy(OffsetDateTime.now())) {
-            reply += "\nOjo: el juego ya tenia una subida en curso (" + SkillCatalog.skillDisplayName(account.getBusySkillCode())
-                    + "), eso no se puede cancelar — solo evito que el bot la vuelva a repetir cuando termine.";
+        List<GameAccount> targets;
+        if (parts[1].equalsIgnoreCase("todas")) {
+            targets = accounts;
+        } else {
+            Optional<GameAccount> match = accounts.stream()
+                    .filter(a -> parts[1].equalsIgnoreCase(a.getName()))
+                    .findFirst();
+            if (match.isEmpty()) {
+                return "No tienes una cuenta llamada '" + parts[1] + "'.";
+            }
+            targets = List.of(match.get());
         }
-        return reply;
+
+        StringBuilder reply = new StringBuilder();
+        boolean stoppedAny = false;
+        for (GameAccount account : targets) {
+            List<UpgradeTask> activeTasks = upgradeTaskRepository.findByGameAccountId(account.getId()).stream()
+                    .filter(t -> t.getStatus() == UpgradeTaskStatus.ACTIVE)
+                    .toList();
+            if (activeTasks.isEmpty()) {
+                continue;
+            }
+            activeTasks.forEach(t -> t.setStatus(UpgradeTaskStatus.PAUSED));
+            upgradeTaskRepository.saveAll(activeTasks);
+            stoppedAny = true;
+
+            reply.append("Se detuvo la subida automatica de '").append(account.getName()).append("'.\n");
+        }
+        return stoppedAny ? reply.toString().strip() : "No hay nada para detener.";
     }
 
     private String handleStatus(Long chatId) {
-        Optional<GameAccount> accountOpt = gameAccountRepository.findByTelegramUserId(chatId);
-        if (accountOpt.isEmpty()) {
-            return "No tienes ninguna cuenta vinculada. Manda /token <tu_token> para empezar.";
-        }
-        GameAccount account = accountOpt.get();
-        List<UpgradeTask> tasks = upgradeTaskRepository.findByGameAccountId(account.getId());
-        if (tasks.isEmpty()) {
-            return "No tienes tareas configuradas. Usa /autosubir <habilidad> <recurso>.";
+        List<GameAccount> accounts = gameAccountRepository.findByTelegramUserId(chatId);
+        if (accounts.isEmpty()) {
+            return "No tienes ninguna cuenta vinculada. Manda /token <token> <cuenta> para empezar.";
         }
 
         StringBuilder sb = new StringBuilder();
-        if (account.isBusy(OffsetDateTime.now())) {
-            sb.append("Cuenta ocupada: subiendo ").append(SkillCatalog.skillDisplayName(account.getBusySkillCode()))
-                    .append(" hasta las ").append(account.getBusyUntil().format(TIME_FORMAT)).append(".\n\n");
-        }
-        sb.append("Tus tareas:\n");
-        for (UpgradeTask task : tasks) {
-            sb.append("- ").append(SkillCatalog.skillDisplayName(task.getSkillCode())).append(" (")
-                    .append(SkillCatalog.resourceDisplayName(task.getCostType())).append("): ")
-                    .append(task.getStatus());
-            if (task.getStatus() == UpgradeTaskStatus.ACTIVE && task.getNextRunAt() != null) {
-                sb.append(", proximo intento ").append(task.getNextRunAt().format(TIME_FORMAT));
+        for (GameAccount account : accounts) {
+            sb.append("Cuenta '").append(account.getName()).append("'");
+            if (!account.isActive()) {
+                sb.append(" [token invalido, manda /token de nuevo]");
             }
-            if (task.getStatus() == UpgradeTaskStatus.ERROR && task.getLastError() != null) {
-                sb.append(" (").append(task.getLastError()).append(")");
+            sb.append(":\n");
+
+            if (account.isBusy(OffsetDateTime.now())) {
+                sb.append("  Ocupada: subiendo ").append(SkillCatalog.skillDisplayName(account.getBusySkillCode()))
+                        .append(" hasta las ").append(account.getBusyUntil().format(TIME_FORMAT)).append("\n");
+            }
+
+            List<UpgradeTask> tasks = upgradeTaskRepository.findByGameAccountId(account.getId());
+            if (tasks.isEmpty()) {
+                sb.append("  Sin tareas configuradas.\n");
+            } else {
+                for (UpgradeTask task : tasks) {
+                    sb.append("  - ").append(SkillCatalog.skillDisplayName(task.getSkillCode())).append(" (")
+                            .append(SkillCatalog.resourceDisplayName(task.getCostType())).append("): ")
+                            .append(task.getStatus());
+                    if (task.getStatus() == UpgradeTaskStatus.ACTIVE && task.getNextRunAt() != null) {
+                        sb.append(", proximo intento ").append(task.getNextRunAt().format(TIME_FORMAT));
+                    }
+                    if (task.getLastError() != null) {
+                        sb.append(" (ultimo problema: ").append(task.getLastError()).append(")");
+                    }
+                    sb.append("\n");
+                }
             }
             sb.append("\n");
         }
-        return sb.toString();
+        return sb.toString().strip();
     }
 }

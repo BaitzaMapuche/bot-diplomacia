@@ -33,6 +33,7 @@ import org.springframework.stereotype.Component;
 public class UpgradeScheduler {
     private static final Logger log = LoggerFactory.getLogger(UpgradeScheduler.class);
     private static final long SAFETY_MARGIN_MS = 2000;
+    private static final long RETRY_BACKOFF_MS = 60_000;
     private static final DateTimeFormatter TIME_FORMAT = DateTimeFormatter.ofPattern("HH:mm:ss");
 
     private final UpgradeTaskRepository upgradeTaskRepository;
@@ -102,7 +103,7 @@ public class UpgradeScheduler {
             gameAccountRepository.save(account);
 
             if (account.isNotifyOnStart()) {
-                notifier.sendMessage(account.getTelegramUserId(), buildSuccessMessage(task, result, nextAvailable));
+                notifier.sendMessage(account.getTelegramUserId(), buildSuccessMessage(account, task, result, nextAvailable));
             }
         } else if (result.isAuthExpired()) {
             account.setActive(false);
@@ -120,20 +121,29 @@ public class UpgradeScheduler {
             upgradeTaskRepository.saveAll(allTasks);
 
             notifier.sendMessage(account.getTelegramUserId(),
-                    "Tu sesion de diplomacia.com.tr expiro o ya no es valida. Todas tus subidas automaticas se pausaron. Manda /token <nuevo_token> para reactivarlas.");
+                    "Tu sesion de '" + account.getName() + "' en diplomacia.com.tr expiro o ya no es valida. Todas las subidas automaticas de esa cuenta se pausaron. Manda /token <nuevo_token> "
+                            + account.getName() + " para reactivarlas.");
         } else {
-            task.setStatus(UpgradeTaskStatus.ERROR);
+            // Fallo que no es de autenticacion (fondos insuficientes, el juego ya tenia algo
+            // pendiente por una accion manual fuera del bot, etc.): normalmente se resuelve
+            // solo con tiempo, asi que la tarea sigue ACTIVE y reintenta en vez de pausarse.
+            // Solo se avisa la primera vez que empieza a fallar, no en cada reintento.
+            boolean wasAlreadyFailing = task.getLastError() != null;
             task.setLastError(result.getErrorMessage());
+            task.setNextRunAt(OffsetDateTime.now().plus(Duration.ofMillis(RETRY_BACKOFF_MS)));
             upgradeTaskRepository.save(task);
-            notifier.sendMessage(account.getTelegramUserId(),
-                    "No se pudo subir " + SkillCatalog.skillDisplayName(task.getSkillCode()) + ": " + result.getErrorMessage()
-                            + ". La tarea quedo pausada, usa /autosubir " + SkillCatalog.skillDisplayName(task.getSkillCode())
-                            + " " + SkillCatalog.resourceDisplayName(task.getCostType()) + " para reintentar.");
+
+            if (!wasAlreadyFailing) {
+                notifier.sendMessage(account.getTelegramUserId(),
+                        "[" + account.getName() + "] No pude subir " + SkillCatalog.skillDisplayName(task.getSkillCode()) + " todavia: "
+                                + result.getErrorMessage() + ". Voy a seguir intentando solo cada minuto, no hace falta que hagas nada.");
+            }
         }
     }
 
-    private String buildSuccessMessage(UpgradeTask task, UpgradeResult result, OffsetDateTime nextAvailable) {
+    private String buildSuccessMessage(GameAccount account, UpgradeTask task, UpgradeResult result, OffsetDateTime nextAvailable) {
         StringBuilder sb = new StringBuilder();
+        sb.append("[").append(account.getName()).append("] ");
         sb.append(SkillCatalog.skillDisplayName(task.getSkillCode())).append(": subida en marcha");
         if (result.getCurrentLevel() != null && result.getTargetLevel() != null) {
             sb.append(" (nivel ").append(result.getCurrentLevel()).append(" -> ").append(result.getTargetLevel()).append(")");

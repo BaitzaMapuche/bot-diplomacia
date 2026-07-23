@@ -19,6 +19,9 @@ public class GameAccount {
 
     private Long telegramUserId;
 
+    /** Alias corto elegido por el usuario para distinguir esta cuenta de sus otras (ej. "principal", "alt1"). */
+    private String name;
+
     @Convert(converter = TokenEncryptionConverter.class)
     @Column(length = 2048)
     private String sessionToken;
@@ -50,6 +53,14 @@ public class GameAccount {
 
     public void setTelegramUserId(Long telegramUserId) {
         this.telegramUserId = telegramUserId;
+    }
+
+    public String getName() {
+        return name;
+    }
+
+    public void setName(String name) {
+        this.name = name;
     }
 
     public String getSessionToken() {

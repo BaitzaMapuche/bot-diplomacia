@@ -27,10 +27,13 @@ Bot de Telegram con Spring Boot, webhook y persistencia en PostgreSQL.
   Guárdala igual que un secreto — si la pierdes, los tokens ya guardados quedan indescifrables y cada usuario tendrá que volver a mandar `/token`.
 
 ## Comandos del bot
-- `/token <token>` - vincula/actualiza tu sesión de diplomacia.com.tr (el bot borra el mensaje inmediatamente después, nunca queda guardado el texto plano en el chat ni en el log de mensajes)
-- `/autosubir <habilidad> <recurso>` - activa la subida automática de una estadística (habilidades: Cuartel, Guerra, Cientifico; recursos: Dinero, Diamante)
-- `/parar <habilidad|all>` - detiene la subida automática de una estadística (o todas)
-- `/estado` - muestra tus tareas activas y cuándo vuelve a intentar cada una
+Un mismo usuario de Telegram puede vincular varias cuentas del juego, cada una identificada por un nombre corto sin espacios (ej. `principal`, `alt1`).
+
+- `/token <token> <cuenta>` - vincula/actualiza el token de esa cuenta (el bot borra el mensaje inmediatamente después, nunca queda guardado el texto plano en el chat ni en el log de mensajes)
+- `/autosubir <habilidad> <recurso> <cuenta>` - activa la subida automática en esa cuenta (habilidades: Cuartel, Guerra, Cientifico; recursos: Dinero, Diamante)
+- `/parar <cuenta|todas>` - detiene la subida automática de esa cuenta (o de todas)
+- `/estado` - muestra el estado de todas las cuentas vinculadas
+- `/notificaciones <on|off> <cuenta>` - activa/desactiva el aviso de "subida en marcha" para esa cuenta (on por defecto)
 - `/autorizar <telegram_id>` - (solo el owner) autoriza a otro usuario a usar el bot
 
 ## Comandos útiles
