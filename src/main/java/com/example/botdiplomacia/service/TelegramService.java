@@ -140,6 +140,7 @@ public class TelegramService {
             case "/token" -> handleToken(chatId, messageId, parts);
             case "/autosubir" -> handleAutoUpgrade(chatId, parts);
             case "/parar" -> handleStop(chatId, parts);
+            case "/borrar" -> handleForget(chatId, parts);
             case "/estado" -> handleStatus(chatId);
             case "/notificaciones" -> handleNotifications(chatId, parts);
             default -> "Comando no reconocido. Usa /help para ver los comandos disponibles.";
@@ -155,6 +156,7 @@ public class TelegramService {
         sb.append("   Habilidades: ").append(SkillCatalog.availableSkillsText()).append("\n");
         sb.append("   Recursos: ").append(SkillCatalog.availableResourcesText()).append("\n");
         sb.append("/parar <cuenta|todas> - detiene la subida automatica de esa cuenta (o de todas)\n");
+        sb.append("/borrar <cuenta|todas> - elimina el token y las tareas de esa cuenta (no se puede deshacer)\n");
         sb.append("/estado - muestra el estado de todas tus cuentas\n");
         sb.append("/notificaciones <on|off> <cuenta> - activa o desactiva el aviso cada vez que arranca una subida en esa cuenta (viene en on por defecto)\n");
         return sb.toString();
@@ -323,6 +325,38 @@ public class TelegramService {
             reply.append("Se detuvo la subida automatica de '").append(account.getName()).append("'.\n");
         }
         return stoppedAny ? reply.toString().strip() : "No hay nada para detener.";
+    }
+
+    private String handleForget(Long chatId, String[] parts) {
+        if (parts.length < 2) {
+            return "Uso: /borrar <cuenta>  o  /borrar todas";
+        }
+        List<GameAccount> accounts = gameAccountRepository.findByTelegramUserId(chatId);
+        if (accounts.isEmpty()) {
+            return "No tienes ninguna cuenta vinculada.";
+        }
+
+        List<GameAccount> targets;
+        if (parts[1].equalsIgnoreCase("todas")) {
+            targets = accounts;
+        } else {
+            Optional<GameAccount> match = accounts.stream()
+                    .filter(a -> parts[1].equalsIgnoreCase(a.getName()))
+                    .findFirst();
+            if (match.isEmpty()) {
+                return "No tienes una cuenta llamada '" + parts[1] + "'.";
+            }
+            targets = List.of(match.get());
+        }
+
+        StringBuilder reply = new StringBuilder();
+        for (GameAccount account : targets) {
+            List<UpgradeTask> tasks = upgradeTaskRepository.findByGameAccountId(account.getId());
+            upgradeTaskRepository.deleteAll(tasks);
+            gameAccountRepository.delete(account);
+            reply.append("Se borro la cuenta '").append(account.getName()).append("' junto con su token y sus tareas.\n");
+        }
+        return reply.toString().strip();
     }
 
     private String handleStatus(Long chatId) {
