@@ -101,7 +101,9 @@ public class UpgradeScheduler {
             account.setBusySkillCode(task.getSkillCode());
             gameAccountRepository.save(account);
 
-            notifier.sendMessage(account.getTelegramUserId(), buildSuccessMessage(task, result, nextAvailable));
+            if (account.isNotifyOnStart()) {
+                notifier.sendMessage(account.getTelegramUserId(), buildSuccessMessage(task, result, nextAvailable));
+            }
         } else if (result.isAuthExpired()) {
             account.setActive(false);
             account.setBusyUntil(null);

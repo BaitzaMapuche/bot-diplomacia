@@ -30,6 +30,9 @@ public class GameAccount {
     private OffsetDateTime busyUntil;
     private String busySkillCode;
 
+    /** Null significa "no configurado todavia" y se trata como true (encendido por defecto). */
+    private Boolean notifyOnStart;
+
     public GameAccount() {
     }
 
@@ -91,5 +94,13 @@ public class GameAccount {
 
     public boolean isBusy(OffsetDateTime now) {
         return busyUntil != null && busyUntil.isAfter(now);
+    }
+
+    public boolean isNotifyOnStart() {
+        return notifyOnStart == null || notifyOnStart;
+    }
+
+    public void setNotifyOnStart(boolean notifyOnStart) {
+        this.notifyOnStart = notifyOnStart;
     }
 }

@@ -26,9 +26,15 @@ public class TelegramService {
     private static final Logger log = LoggerFactory.getLogger(TelegramService.class);
     private static final DateTimeFormatter TIME_FORMAT = DateTimeFormatter.ofPattern("HH:mm:ss");
     private static final String TOKEN_HELP =
-            "   Como conseguirlo: entra a diplomacia.com.tr ya logueado, abre las herramientas de desarrollador (F12), "
-                    + "pestana Network, actualiza la pagina o haz cualquier accion, busca cualquier peticion al sitio y copia "
-                    + "el valor que aparece en el header 'Authorization' despues de la palabra 'Bearer '.";
+            "   Como conseguirlo:\n"
+                    + "   1. Entra a diplomacia.com.tr ya logueado con tu cuenta.\n"
+                    + "   2. Abre las herramientas de desarrollador con la tecla F12.\n"
+                    + "   3. Arriba en esa ventana, haz click en la pestana 'Network'.\n"
+                    + "   4. Con esa pestana abierta, recarga la pagina (F5) o haz click en cualquier boton del juego.\n"
+                    + "   5. Va a aparecer una lista con varias filas en la columna 'Name'. Haz click en cualquiera de esas filas.\n"
+                    + "   6. Se abre un panel a la derecha (o abajo). Ahi busca la seccion 'Headers'.\n"
+                    + "   7. Dentro de 'Headers', baja hasta 'Request Headers' y busca la linea 'Authorization'.\n"
+                    + "   8. Esa linea dice 'Bearer ' seguido de un texto largo. Copia solo ese texto largo (sin la palabra 'Bearer').";
 
     private final TelegramProperties telegramProperties;
     private final TelegramChatMessageRepository chatMessageRepository;
@@ -135,20 +141,41 @@ public class TelegramService {
             case "/autosubir" -> handleAutoUpgrade(chatId, parts);
             case "/parar" -> handleStop(chatId);
             case "/estado" -> handleStatus(chatId);
+            case "/notificaciones" -> handleNotifications(chatId, parts);
             default -> "Comando no reconocido. Usa /help para ver los comandos disponibles.";
         };
     }
 
     private String helpText() {
         StringBuilder sb = new StringBuilder("Comandos disponibles:\n");
-        sb.append("/token <token> - guarda o actualiza tu sesion de diplomacia.com.tr (borro tu mensaje despues)\n");
+        sb.append("/token <token> - guarda o actualiza tu sesion de diplomacia.com.tr\n");
         sb.append(TOKEN_HELP).append("\n");
         sb.append("/autosubir <habilidad> <recurso> - activa la subida automatica de una estadistica\n");
         sb.append("   Habilidades: ").append(SkillCatalog.availableSkillsText()).append("\n");
         sb.append("   Recursos: ").append(SkillCatalog.availableResourcesText()).append("\n");
         sb.append("/parar - detiene todas tus subidas automaticas\n");
         sb.append("/estado - muestra tus tareas y cuando corren de nuevo\n");
+        sb.append("/notificaciones <on|off> - activa o desactiva el aviso cada vez que arranca una subida (viene en on por defecto)\n");
         return sb.toString();
+    }
+
+    private String handleNotifications(Long chatId, String[] parts) {
+        Optional<GameAccount> accountOpt = gameAccountRepository.findByTelegramUserId(chatId);
+        if (accountOpt.isEmpty()) {
+            return "Primero manda /token <tu_token> para vincular tu cuenta del juego.";
+        }
+        if (parts.length < 2 || !(parts[1].equalsIgnoreCase("on") || parts[1].equalsIgnoreCase("off"))) {
+            return "Uso: /notificaciones <on|off>";
+        }
+
+        GameAccount account = accountOpt.get();
+        boolean enable = parts[1].equalsIgnoreCase("on");
+        account.setNotifyOnStart(enable);
+        gameAccountRepository.save(account);
+
+        return enable
+                ? "Listo, te voy a avisar cada vez que arranque una subida."
+                : "Listo, ya no te aviso cuando arranca una subida (los errores y el token vencido si te los sigo avisando).";
     }
 
     private String handleAuthorize(Long chatId, String[] parts) {
