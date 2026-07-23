@@ -8,6 +8,8 @@ import org.springframework.context.annotation.Configuration;
 public class TelegramProperties {
     private String botToken;
     private String apiUrl;
+    private Long ownerId;
+    private String webhookSecret;
 
     public String getBotToken() {
         return botToken;
@@ -23,5 +25,21 @@ public class TelegramProperties {
 
     public void setApiUrl(String apiUrl) {
         this.apiUrl = apiUrl;
+    }
+
+    public Long getOwnerId() {
+        return ownerId;
+    }
+
+    public void setOwnerId(Long ownerId) {
+        this.ownerId = ownerId;
+    }
+
+    public String getWebhookSecret() {
+        return webhookSecret;
+    }
+
+    public void setWebhookSecret(String webhookSecret) {
+        this.webhookSecret = webhookSecret;
     }
 }

@@ -1,35 +1,50 @@
 package com.example.botdiplomacia.service;
 
 import com.example.botdiplomacia.config.TelegramProperties;
+import com.example.botdiplomacia.diplomacia.SkillCatalog;
+import com.example.botdiplomacia.model.AuthorizedUser;
+import com.example.botdiplomacia.model.GameAccount;
 import com.example.botdiplomacia.model.TelegramChatMessage;
+import com.example.botdiplomacia.model.UpgradeTask;
+import com.example.botdiplomacia.model.UpgradeTaskStatus;
+import com.example.botdiplomacia.repository.AuthorizedUserRepository;
+import com.example.botdiplomacia.repository.GameAccountRepository;
 import com.example.botdiplomacia.repository.TelegramChatMessageRepository;
+import com.example.botdiplomacia.repository.UpgradeTaskRepository;
+import java.time.OffsetDateTime;
+import java.time.format.DateTimeFormatter;
+import java.util.List;
+import java.util.Optional;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.http.HttpEntity;
-import org.springframework.http.HttpHeaders;
-import org.springframework.http.MediaType;
 import org.springframework.stereotype.Service;
-import org.springframework.web.client.RestTemplate;
 import org.telegram.telegrambots.meta.api.objects.Update;
-import java.net.URI;
-import java.time.OffsetDateTime;
-import java.util.HashMap;
-import java.util.Map;
+import org.telegram.telegrambots.meta.api.objects.User;
 
 @Service
 public class TelegramService {
     private static final Logger log = LoggerFactory.getLogger(TelegramService.class);
+    private static final DateTimeFormatter TIME_FORMAT = DateTimeFormatter.ofPattern("HH:mm:ss");
 
     private final TelegramProperties telegramProperties;
-    private final TelegramChatMessageRepository repository;
-    private final RestTemplate restTemplate;
+    private final TelegramChatMessageRepository chatMessageRepository;
+    private final AuthorizedUserRepository authorizedUserRepository;
+    private final GameAccountRepository gameAccountRepository;
+    private final UpgradeTaskRepository upgradeTaskRepository;
+    private final TelegramNotifier notifier;
 
     public TelegramService(TelegramProperties telegramProperties,
-                           TelegramChatMessageRepository repository,
-                           RestTemplate restTemplate) {
+                            TelegramChatMessageRepository chatMessageRepository,
+                            AuthorizedUserRepository authorizedUserRepository,
+                            GameAccountRepository gameAccountRepository,
+                            UpgradeTaskRepository upgradeTaskRepository,
+                            TelegramNotifier notifier) {
         this.telegramProperties = telegramProperties;
-        this.repository = repository;
-        this.restTemplate = restTemplate;
+        this.chatMessageRepository = chatMessageRepository;
+        this.authorizedUserRepository = authorizedUserRepository;
+        this.gameAccountRepository = gameAccountRepository;
+        this.upgradeTaskRepository = upgradeTaskRepository;
+        this.notifier = notifier;
     }
 
     public void processUpdate(Update update) {
@@ -38,57 +53,262 @@ public class TelegramService {
         }
 
         Long chatId = update.getMessage().getChatId();
-        Long messageId = update.getMessage().getMessageId().longValue();
+        Integer messageId = update.getMessage().getMessageId();
         String text = update.getMessage().getText();
-        String username = update.getMessage().getFrom() != null ? update.getMessage().getFrom().getUserName() : null;
+        User from = update.getMessage().getFrom();
+        String username = from != null ? from.getUserName() : null;
 
-        TelegramChatMessage chatMessage = new TelegramChatMessage();
-        chatMessage.setChatId(chatId);
-        chatMessage.setMessageId(messageId);
-        chatMessage.setText(text);
-        chatMessage.setUserName(username);
-        chatMessage.setReceivedAt(OffsetDateTime.now());
-        repository.save(chatMessage);
+        boolean authorized = isAuthorized(chatId);
+        logIncoming(chatId, from, authorized, text);
 
-        String replyText = buildReplyText(text, username);
-        sendTelegramMessage(chatId, replyText);
+        chatMessageRepository.save(buildLogEntry(chatId, messageId, username, text));
+
+        if (text == null || text.isBlank()) {
+            return;
+        }
+
+        if (!authorized) {
+            notifier.sendMessage(chatId, "No estas autorizado a usar este bot.");
+            return;
+        }
+
+        String reply = route(chatId, messageId, text.strip());
+        if (reply != null) {
+            notifier.sendMessage(chatId, reply);
+        }
     }
 
-    private String buildReplyText(String incomingText, String username) {
-        if (incomingText == null || incomingText.isBlank()) {
-            return "Recibí tu mensaje, pero no pude leerlo. Intenta enviar texto simple.";
-        }
+    private void logIncoming(Long chatId, User from, boolean authorized, String text) {
+        String fullName = from != null
+                ? ((from.getFirstName() != null ? from.getFirstName() : "") + " " + (from.getLastName() != null ? from.getLastName() : "")).strip()
+                : "desconocido";
+        String username = from != null && from.getUserName() != null ? "@" + from.getUserName() : "(sin username)";
+        String safeText = redact(text);
 
-        String lower = incomingText.strip().toLowerCase();
-        if (lower.equals("/start")) {
-            return "¡Bienvenido! Soy tu bot de diplomacia. Envía cualquier mensaje y lo responderé.";
+        if (authorized) {
+            log.info("Mensaje de usuario AUTORIZADO - userId={} username={} nombre=\"{}\" texto=\"{}\"",
+                    chatId, username, fullName, safeText);
+        } else {
+            log.warn("Mensaje de usuario NO AUTORIZADO - userId={} username={} nombre=\"{}\" texto=\"{}\"",
+                    chatId, username, fullName, safeText);
         }
-
-        if (lower.equals("/help")) {
-            return "Comandos disponibles:\n/start - iniciar\n/help - mostrar ayuda\n/echo - repite tu texto";
-        }
-
-        if (lower.startsWith("/echo")) {
-            String echoText = incomingText.length() > 5 ? incomingText.substring(5).strip() : "Nada para repetir.";
-            return "Echo: " + echoText;
-        }
-
-        return "Hola" + (username != null ? " @" + username : "") + ", recibí: " + incomingText;
     }
 
-    private void sendTelegramMessage(Long chatId, String text) {
+    private String redact(String text) {
+        if (text != null && text.strip().toLowerCase().startsWith("/token")) {
+            return "/token [REDACTED]";
+        }
+        return text;
+    }
+
+    private TelegramChatMessage buildLogEntry(Long chatId, Integer messageId, String username, String text) {
+        TelegramChatMessage entry = new TelegramChatMessage();
+        entry.setChatId(chatId);
+        entry.setMessageId(messageId != null ? messageId.longValue() : null);
+        entry.setUserName(username);
+        entry.setText(redact(text));
+        entry.setReceivedAt(OffsetDateTime.now());
+        return entry;
+    }
+
+    private boolean isOwner(Long chatId) {
+        return telegramProperties.getOwnerId() != null && telegramProperties.getOwnerId().equals(chatId);
+    }
+
+    private boolean isAuthorized(Long chatId) {
+        return isOwner(chatId) || authorizedUserRepository.existsById(chatId);
+    }
+
+    private String route(Long chatId, Integer messageId, String text) {
+        String[] parts = text.split("\\s+");
+        String command = parts[0].toLowerCase();
+
+        return switch (command) {
+            case "/start" -> "Bienvenido a tu bot de diplomacia. Usa /help para ver los comandos disponibles.";
+            case "/help" -> helpText(isOwner(chatId));
+            case "/autorizar" -> handleAuthorize(chatId, parts);
+            case "/token" -> handleToken(chatId, messageId, text, parts[0]);
+            case "/autosubir" -> handleAutoUpgrade(chatId, parts);
+            case "/parar" -> handleStop(chatId, parts);
+            case "/estado" -> handleStatus(chatId);
+            default -> "Comando no reconocido. Usa /help para ver los comandos disponibles.";
+        };
+    }
+
+    private String helpText(boolean owner) {
+        StringBuilder sb = new StringBuilder("Comandos disponibles:\n");
+        sb.append("/token <token> - guarda o actualiza tu sesion de diplomacia.com.tr (borro tu mensaje despues)\n");
+        sb.append("/autosubir <habilidad> <recurso> - activa la subida automatica de una estadistica\n");
+        sb.append("   Habilidades: ").append(SkillCatalog.availableSkillsText()).append("\n");
+        sb.append("   Recursos: ").append(SkillCatalog.availableResourcesText()).append("\n");
+        sb.append("/parar <habilidad|all> - detiene la subida automatica\n");
+        sb.append("/estado - muestra tus tareas y cuando corren de nuevo\n");
+        if (owner) {
+            sb.append("/autorizar <telegram_id> - autoriza a un usuario a usar el bot\n");
+        }
+        return sb.toString();
+    }
+
+    private String handleAuthorize(Long chatId, String[] parts) {
+        if (!isOwner(chatId)) {
+            return "No tienes permiso para usar este comando.";
+        }
+        if (parts.length < 2) {
+            return "Uso: /autorizar <telegram_id>";
+        }
         try {
-            String url = String.format("%s/bot%s/sendMessage", telegramProperties.getApiUrl(), telegramProperties.getBotToken());
-            Map<String, Object> payload = new HashMap<>();
-            payload.put("chat_id", chatId);
-            payload.put("text", text);
-
-            HttpHeaders headers = new HttpHeaders();
-            headers.setContentType(MediaType.APPLICATION_JSON);
-            HttpEntity<Map<String, Object>> request = new HttpEntity<>(payload, headers);
-            restTemplate.postForLocation(new URI(url), request);
-        } catch (Exception e) {
-            log.error("Error enviando mensaje a Telegram (chatId={})", chatId, e);
+            Long targetId = Long.parseLong(parts[1]);
+            if (authorizedUserRepository.existsById(targetId)) {
+                return "Ese usuario ya estaba autorizado.";
+            }
+            authorizedUserRepository.save(new AuthorizedUser(targetId, null));
+            return "Usuario " + targetId + " autorizado.";
+        } catch (NumberFormatException e) {
+            return "El telegram_id debe ser un numero.";
         }
+    }
+
+    private String handleToken(Long chatId, Integer messageId, String text, String commandWord) {
+        String token = text.substring(commandWord.length()).strip();
+        if (token.isEmpty()) {
+            return "Uso: /token <tu_token>";
+        }
+
+        GameAccount account = gameAccountRepository.findByTelegramUserId(chatId).orElseGet(GameAccount::new);
+        account.setTelegramUserId(chatId);
+        account.setSessionToken(token);
+        account.setTokenUpdatedAt(OffsetDateTime.now());
+        account.setActive(true);
+        gameAccountRepository.save(account);
+
+        List<UpgradeTask> tasks = upgradeTaskRepository.findByGameAccountId(account.getId());
+        for (UpgradeTask task : tasks) {
+            if (task.getStatus() == UpgradeTaskStatus.ERROR) {
+                task.setStatus(UpgradeTaskStatus.ACTIVE);
+                task.setNextRunAt(OffsetDateTime.now());
+                task.setLastError(null);
+                upgradeTaskRepository.save(task);
+            }
+        }
+
+        if (messageId != null) {
+            notifier.deleteMessage(chatId, messageId);
+        }
+        return "Token guardado. Borre tu mensaje por seguridad. Tareas en error se reactivaron.";
+    }
+
+    private String handleAutoUpgrade(Long chatId, String[] parts) {
+        if (parts.length < 3) {
+            return "Uso: /autosubir <habilidad> <recurso>\nHabilidades: " + SkillCatalog.availableSkillsText()
+                    + "\nRecursos: " + SkillCatalog.availableResourcesText();
+        }
+        String skillCode = SkillCatalog.resolveSkillCode(parts[1]);
+        if (skillCode == null) {
+            return "No reconozco la habilidad '" + parts[1] + "'. Opciones: " + SkillCatalog.availableSkillsText();
+        }
+        String costType = SkillCatalog.resolveResourceCode(parts[2]);
+        if (costType == null) {
+            return "No reconozco el recurso '" + parts[2] + "'. Opciones: " + SkillCatalog.availableResourcesText();
+        }
+
+        Optional<GameAccount> accountOpt = gameAccountRepository.findByTelegramUserId(chatId);
+        if (accountOpt.isEmpty()) {
+            return "Primero manda /token <tu_token> para vincular tu cuenta del juego.";
+        }
+        GameAccount account = accountOpt.get();
+        if (!account.isActive()) {
+            return "Tu token esta marcado como invalido. Manda /token <nuevo_token> primero.";
+        }
+
+        UpgradeTask task = upgradeTaskRepository.findByGameAccountIdAndSkillCode(account.getId(), skillCode)
+                .orElseGet(UpgradeTask::new);
+        boolean isNew = task.getId() == null;
+        task.setGameAccountId(account.getId());
+        task.setSkillCode(skillCode);
+        task.setCostType(costType);
+        task.setStatus(UpgradeTaskStatus.ACTIVE);
+        task.setNextRunAt(OffsetDateTime.now());
+        task.setLastError(null);
+        if (isNew) {
+            task.setCreatedAt(OffsetDateTime.now());
+        }
+        upgradeTaskRepository.save(task);
+
+        String reply = "Subida automatica activada para " + SkillCatalog.skillDisplayName(skillCode) + " pagando con "
+                + SkillCatalog.resourceDisplayName(costType) + ".";
+        if (account.isBusy(OffsetDateTime.now())) {
+            reply += "\nOjo: ahora mismo el juego ya tiene otra subida en curso (" + SkillCatalog.skillDisplayName(account.getBusySkillCode())
+                    + "), asi que esta empezara automaticamente cuando esa termine, aprox a las "
+                    + account.getBusyUntil().format(TIME_FORMAT) + ".";
+        }
+        return reply;
+    }
+
+    private String handleStop(Long chatId, String[] parts) {
+        if (parts.length < 2) {
+            return "Uso: /parar <habilidad|all>";
+        }
+        Optional<GameAccount> accountOpt = gameAccountRepository.findByTelegramUserId(chatId);
+        if (accountOpt.isEmpty()) {
+            return "No tienes ninguna cuenta vinculada.";
+        }
+        List<UpgradeTask> tasks = upgradeTaskRepository.findByGameAccountId(accountOpt.get().getId());
+
+        if (parts[1].equalsIgnoreCase("all")) {
+            tasks.forEach(t -> t.setStatus(UpgradeTaskStatus.PAUSED));
+            upgradeTaskRepository.saveAll(tasks);
+            return "Se detuvieron todas tus tareas.";
+        }
+
+        String skillCode = SkillCatalog.resolveSkillCode(parts[1]);
+        if (skillCode == null) {
+            return "No reconozco la habilidad '" + parts[1] + "'. Opciones: " + SkillCatalog.availableSkillsText();
+        }
+        Optional<UpgradeTask> taskOpt = tasks.stream().filter(t -> t.getSkillCode().equals(skillCode)).findFirst();
+        if (taskOpt.isEmpty()) {
+            return "No tenias una tarea para " + SkillCatalog.skillDisplayName(skillCode) + ".";
+        }
+        UpgradeTask task = taskOpt.get();
+        task.setStatus(UpgradeTaskStatus.PAUSED);
+        upgradeTaskRepository.save(task);
+
+        String reply = "Se detuvo la subida automatica de " + SkillCatalog.skillDisplayName(skillCode) + ".";
+        GameAccount account = accountOpt.get();
+        if (account.isBusy(OffsetDateTime.now()) && skillCode.equals(account.getBusySkillCode())) {
+            reply += "\nOjo: el juego ya tenia esta subida en curso, eso no se puede cancelar — solo evito que el bot la vuelva a repetir cuando termine.";
+        }
+        return reply;
+    }
+
+    private String handleStatus(Long chatId) {
+        Optional<GameAccount> accountOpt = gameAccountRepository.findByTelegramUserId(chatId);
+        if (accountOpt.isEmpty()) {
+            return "No tienes ninguna cuenta vinculada. Manda /token <tu_token> para empezar.";
+        }
+        GameAccount account = accountOpt.get();
+        List<UpgradeTask> tasks = upgradeTaskRepository.findByGameAccountId(account.getId());
+        if (tasks.isEmpty()) {
+            return "No tienes tareas configuradas. Usa /autosubir <habilidad> <recurso>.";
+        }
+
+        StringBuilder sb = new StringBuilder();
+        if (account.isBusy(OffsetDateTime.now())) {
+            sb.append("Cuenta ocupada: subiendo ").append(SkillCatalog.skillDisplayName(account.getBusySkillCode()))
+                    .append(" hasta las ").append(account.getBusyUntil().format(TIME_FORMAT)).append(".\n\n");
+        }
+        sb.append("Tus tareas:\n");
+        for (UpgradeTask task : tasks) {
+            sb.append("- ").append(SkillCatalog.skillDisplayName(task.getSkillCode())).append(" (")
+                    .append(SkillCatalog.resourceDisplayName(task.getCostType())).append("): ")
+                    .append(task.getStatus());
+            if (task.getStatus() == UpgradeTaskStatus.ACTIVE && task.getNextRunAt() != null) {
+                sb.append(", proximo intento ").append(task.getNextRunAt().format(TIME_FORMAT));
+            }
+            if (task.getStatus() == UpgradeTaskStatus.ERROR && task.getLastError() != null) {
+                sb.append(" (").append(task.getLastError()).append(")");
+            }
+            sb.append("\n");
+        }
+        return sb.toString();
     }
 }
